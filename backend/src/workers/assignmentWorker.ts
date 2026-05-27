@@ -60,12 +60,22 @@ export const processAssignmentJob = async (job: Job) => {
       { new: true }
     );
 
-    // Invalidate caches dynamically to avoid circular dependency
-    try {
-      const { invalidateCache } = require('../controllers/assignmentController');
-      await invalidateCache(assignmentId);
-    } catch (cacheErr) {
-      console.warn('⚠️ Circular cache invalidation warning ignored inside worker.');
+    // 6. Invalidate Redis Caches
+    if (isRedisAvailable()) {
+      try {
+        // 1. Find and delete all paginated search/filter list caches
+        const listKeys = await redisConnection.keys('cache:assignments:*');
+        if (listKeys.length > 0) {
+          await redisConnection.del(...listKeys);
+          console.log(`⚡ Worker invalidated ${listKeys.length} list caches`);
+        }
+        
+        // 2. Delete specific assignment detail cache
+        await redisConnection.del(`cache:assignment:${assignmentId}`);
+        console.log(`⚡ Worker invalidated detail cache for assignment: ${assignmentId}`);
+      } catch (cacheErr: any) {
+        console.warn('⚠️ Redis Cache Invalidation inside worker failed:', cacheErr.message);
+      }
     }
 
     // 5. Emit completed event with final data

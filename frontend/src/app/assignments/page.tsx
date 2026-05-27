@@ -6,6 +6,7 @@ import { useAssignmentStore, IAssignment } from '@/store/useAssignmentStore';
 import { Sidebar } from '@/components/Sidebar';
 import { MobileNavbar } from '@/components/MobileNavbar';
 import { EmptyState } from '@/components/EmptyState';
+import { getSocket, joinAssignmentRoom } from '@/utils/socket';
 import {
   Search,
   Filter,
@@ -60,6 +61,35 @@ export default function AssignmentsPage() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // 4. Real-time updates via Socket.io for pending or processing assignments in the list
+  useEffect(() => {
+    const activeAssignments = assignments.filter(
+      (a) => a.status === 'pending' || a.status === 'processing'
+    );
+
+    if (activeAssignments.length > 0) {
+      const socket = getSocket();
+      
+      activeAssignments.forEach((a) => {
+        joinAssignmentRoom(a._id);
+      });
+
+      const handleProgressUpdate = (payload: any) => {
+        console.log('📡 List Page Socket Progress:', payload);
+        if (payload.status === 'completed' || payload.status === 'failed') {
+          // Re-fetch list to update status and questions
+          fetchAssignments(searchText, statusFilter);
+        }
+      };
+
+      socket.on('assignment-progress', handleProgressUpdate);
+
+      return () => {
+        socket.off('assignment-progress', handleProgressUpdate);
+      };
+    }
+  }, [assignments, searchText, statusFilter, fetchAssignments]);
 
   const handleDelete = async (id: string) => {
     const confirmed = window.confirm('Are you sure you want to delete this assignment?');
@@ -220,7 +250,9 @@ export default function AssignmentsPage() {
               {assignments.map((assignment) => (
                 <div
                   key={assignment._id}
-                  className="bg-white rounded-2xl border border-gray-150 shadow-[0_8px_30px_rgb(0,0,0,0.03)] hover:shadow-md hover:border-gray-200 transition-all duration-300 flex flex-col md:flex-row md:items-center justify-between p-6 relative group gap-4 w-full"
+                  className={`bg-white rounded-2xl border border-gray-150 shadow-[0_8px_30px_rgb(0,0,0,0.03)] hover:shadow-md hover:border-gray-200 transition-all duration-300 flex flex-col md:flex-row md:items-center justify-between p-6 relative group gap-4 w-full ${
+                    activeDropdownId === assignment._id ? 'z-40' : 'z-10'
+                  }`}
                 >
                   {/* Left side: Icon + Title & Metadata */}
                   <div className="flex items-center gap-4 flex-1 min-w-0">

@@ -41,11 +41,12 @@ export const generateWorksheet = async (params: IGenerationParams): Promise<IGen
     .join('\n');
 
   // Check API keys
+  const groqKey = process.env.GROQ_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
   const openAIKey = process.env.OPENAI_API_KEY;
 
-  if (!geminiKey && !openAIKey) {
-    console.warn('⚠️ No GEMINI_API_KEY or OPENAI_API_KEY found. Using smart premium fallback generator.');
+  if (!groqKey && !geminiKey && !openAIKey) {
+    console.warn('⚠️ No GROQ_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY found. Using smart premium fallback generator.');
     return generatePremiumFallback(params, totalMarks);
   }
 
@@ -90,13 +91,47 @@ ${questionRequirements}
 
 ${imagePath ? 'IMPORTANT: Please read the attached document image and generate questions based strictly on the text, topics, formulas, or diagrams presented in the image.' : 'Please generate standard curriculum-aligned questions for this topic.'}`;
 
-  try {
-    if (geminiKey) {
+  // 1. Try Groq Llama 3.3 70B (Fast and free)
+  if (groqKey) {
+    try {
+      console.log('Using Groq Llama 3.3 API for generation...');
+      const openai = new OpenAI({
+        apiKey: groqKey,
+        baseURL: 'https://api.groq.com/openai/v1'
+      });
+      
+      const response = await openai.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        response_format: { type: 'json_object' }
+      }, {
+        timeout: 10000 // 10s request timeout for Groq
+      });
+
+      const responseText = response.choices[0]?.message?.content || '';
+      return JSON.parse(responseText);
+    } catch (groqError: any) {
+      console.warn('❌ Groq generation failed, falling back to Gemini...', groqError.message || groqError);
+    }
+  }
+
+  // 2. Try Gemini API (via HTTP)
+  if (geminiKey) {
+    try {
       console.log('Using Gemini API (via HTTP) for generation...');
-      // Since @google/genai requires native installation which might be tricky in sandbox, we'll use standard https fetch to Gemini REST API
       const response = await callGeminiREST(geminiKey, systemPrompt, userPrompt, imagePath);
       return response;
-    } else if (openAIKey) {
+    } catch (geminiError: any) {
+      console.warn('❌ Gemini generation failed, falling back to OpenAI...', geminiError.message || geminiError);
+    }
+  }
+
+  // 3. Try OpenAI GPT-4o API
+  if (openAIKey) {
+    try {
       console.log('Using OpenAI GPT-4o for generation...');
       const openai = new OpenAI({ apiKey: openAIKey });
       
@@ -122,21 +157,23 @@ ${imagePath ? 'IMPORTANT: Please read the attached document image and generate q
       }
 
       const response = await openai.chat.completions.create({
-        model: imagePath ? 'gpt-4o' : 'gpt-4-turbo',
+        model: 'gpt-4o',
         messages: messages,
         response_format: { type: 'json_object' }
+      }, {
+        timeout: 15000 // 15s timeout
       });
 
       const responseText = response.choices[0]?.message?.content || '';
       return JSON.parse(responseText);
-    } else {
-      throw new Error('No API keys configured.');
+    } catch (openaiError: any) {
+      console.warn('❌ OpenAI generation failed...', openaiError.message || openaiError);
     }
-  } catch (error: any) {
-    console.error('❌ AI Generation failed:', error);
-    console.log('Falling back to premium pre-generated schema to ensure zero failure.');
-    return generatePremiumFallback(params, totalMarks);
   }
+
+  // 4. Final Mock Fallback
+  console.log('Falling back to premium pre-generated schema to ensure zero failure.');
+  return generatePremiumFallback(params, totalMarks);
 };
 
 const callGeminiREST = async (
@@ -178,7 +215,8 @@ const callGeminiREST = async (
       generationConfig: {
         responseMimeType: 'application/json'
       }
-    })
+    }),
+    timeout: 15000 // 15 seconds request timeout
   });
 
   if (!response.ok) {

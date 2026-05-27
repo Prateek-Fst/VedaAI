@@ -49,7 +49,8 @@ export default function AssignmentDetailsPage() {
 
   // 2. Setup Socket.io for regeneration updates
   useEffect(() => {
-    if (assignmentId && generatingStatus === 'pending') {
+    const isGenerating = generatingStatus === 'pending' || generatingStatus === 'processing';
+    if (assignmentId && isGenerating) {
       joinAssignmentRoom(assignmentId);
       
       const socket = getSocket();
@@ -72,6 +73,57 @@ export default function AssignmentDetailsPage() {
     }
   }, [assignmentId, generatingStatus, setGeneratingProgress, setCurrentAssignment, resetGenerating]);
 
+  // 3. Polling fallback to reconcile state if socket events are missed during regeneration
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+    const isGenerating = generatingStatus === 'pending' || generatingStatus === 'processing';
+    
+    if (assignmentId && isGenerating) {
+      intervalId = setInterval(async () => {
+        try {
+          const res = await fetch(`http://localhost:5001/api/assignments/${assignmentId}`);
+          if (res.ok) {
+            const data = await res.json();
+            console.log('📡 Details Polling Reconciler checked status:', data.status);
+            
+            if (data.status === 'completed') {
+              setGeneratingProgress('completed', 100, 'Worksheet completed!');
+              setCurrentAssignment(data);
+              
+              if (intervalId) clearInterval(intervalId);
+              
+              setTimeout(() => {
+                resetGenerating();
+              }, 800);
+            } else if (data.status === 'failed') {
+              setGeneratingProgress('failed', 100, data.error || 'AI generation failed');
+              if (intervalId) clearInterval(intervalId);
+            } else {
+              // Reconcile status and progress locally
+              const progressMap = {
+                'pending': 10,
+                'processing': 50,
+                'completed': 100,
+                'failed': 100
+              };
+              const mappedProgress = progressMap[data.status as keyof typeof progressMap] || 20;
+              // Only update if the parsed status progress is ahead
+              if (mappedProgress > generatingProgress) {
+                setGeneratingProgress(data.status, mappedProgress, 'Regenerating question paper in progress...');
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('⚠️ Details Polling reconciliation failed:', err);
+        }
+      }, 1500); // Check every 1.5 seconds
+    }
+    
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [assignmentId, generatingStatus, generatingProgress, setGeneratingProgress, setCurrentAssignment, resetGenerating]);
+
   if (!currentAssignment) {
     return (
       <div className="flex h-screen items-center justify-center bg-[#f3f4f6]">
@@ -92,54 +144,45 @@ export default function AssignmentDetailsPage() {
       // Wait for React to re-render the DOM without screen-only items
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      // Temporarily hide all .no-print elements inline (100% immune to CSS engine bugs)
-      const noPrintElements = Array.from(document.querySelectorAll('.no-print')) as HTMLElement[];
-      noPrintElements.forEach((el) => {
-        el.style.setProperty('display', 'none', 'important');
-      });
-
-      // Temporarily sanitize stylesheets to prevent html2canvas color parsing errors (oklch, lab)
-      const originalStates: Array<{ sheet: CSSStyleSheet; disabled: boolean }> = [];
-      const sanitizedStylesheets: HTMLStyleElement[] = [];
-
-      // 1. Snapshot and disable all existing stylesheets (prevents dynamic length changes during mutation!)
-      const initialStyleSheets = Array.from(document.styleSheets) as CSSStyleSheet[];
-      initialStyleSheets.forEach((sheet) => {
-        try {
-          if (sheet) {
-            originalStates.push({ sheet, disabled: sheet.disabled });
-            sheet.disabled = true;
-          }
-        } catch (e) {}
-      });
-
-      // 2. Aggregate all style rules directly from style tags - INSTANT (no looping rules!)
-      const styleElements = Array.from(document.querySelectorAll('style:not([data-sanitized-pdf])'));
-      const combinedCSS = styleElements.map((el) => el.textContent || '').join('\n');
-
-      // 3. Sanitize unsupported Tailwind CSS v4 color notations and local font loads
-      const sanitizedRules = combinedCSS
-        .replace(/@font-face\s*\{[\s\S]*?\}/g, '')
-        .replace(/oklch\([^)]+\)/g, '#374151') // default slate-700
-        .replace(/lab\([^)]+\)/g, '#374151')
-        .replace(/oklab\([^)]+\)/g, '#374151')
-        .replace(/lch\([^)]+\)/g, '#374151');
+      // Intercept window.getComputedStyle to sanitize modern colors for html2canvas
+      const originalGetComputedStyle = window.getComputedStyle;
+      window.getComputedStyle = function (el, pseudoElt) {
+        const style = originalGetComputedStyle(el, pseudoElt);
         
-      // 4. Inject a single sanitized style element OUTSIDE the disabling phase (removes infinite loop entirely)
-      const styleEl = document.createElement('style');
-      styleEl.setAttribute('data-sanitized-pdf', 'true');
-      styleEl.textContent = sanitizedRules;
-      document.head.appendChild(styleEl);
-      sanitizedStylesheets.push(styleEl);
+        const sanitizeColorStr = (val: string) => {
+          if (!val || typeof val !== 'string') return val;
+          if (val.includes('oklch') || val.includes('oklab') || val.includes('lab') || val.includes('lch')) {
+            return val
+              .replace(/oklch\([^)]+\)/g, 'rgb(0, 0, 0)')
+              .replace(/oklab\([^)]+\)/g, 'rgb(0, 0, 0)')
+              .replace(/lab\([^)]+\)/g, 'rgb(0, 0, 0)')
+              .replace(/lch\([^)]+\)/g, 'rgb(0, 0, 0)');
+          }
+          return val;
+        };
+
+        return new Proxy(style, {
+          get(target, prop) {
+            if (prop === 'getPropertyValue') {
+              return function (propertyName: string) {
+                const value = target.getPropertyValue(propertyName);
+                return sanitizeColorStr(value);
+              };
+            }
+            const value = Reflect.get(target, prop);
+            if (typeof value === 'function') {
+              return value.bind(target);
+            }
+            if (typeof value === 'string') {
+              return sanitizeColorStr(value);
+            }
+            return value;
+          }
+        });
+      };
 
       restoreStylesheets = () => {
-        originalStates.forEach(({ sheet, disabled }) => {
-          if (sheet) sheet.disabled = disabled;
-        });
-        sanitizedStylesheets.forEach((el) => el.remove());
-        noPrintElements.forEach((el) => {
-          if (el) el.style.removeProperty('display');
-        });
+        window.getComputedStyle = originalGetComputedStyle;
       };
 
       // Import html2pdf dynamically in browser
@@ -306,7 +349,7 @@ export default function AssignmentDetailsPage() {
               </div>
 
               {/* Exam Instructions Meta Row (Standard Table - 100% immune to float overlaps) */}
-              <table className="w-full mb-6 font-sans text-xs lg:text-sm font-bold text-zinc-800 border-b pb-2 border-zinc-200" style={{ borderCollapse: 'collapse' }}>
+              <table className="w-full mb-6 font-sans text-xs lg:text-sm font-bold text-zinc-800 pb-2" style={{ borderCollapse: 'collapse' }}>
                 <tbody>
                   <tr>
                     <td className="py-2 text-left border-none whitespace-nowrap" style={{ width: '50%' }}>Time Allowed: {currentAssignment.timeAllowed || 45} minutes</td>

@@ -13,7 +13,7 @@ The application is structured as a decoupled monorepo separating a high-performa
 - **Database**: MongoDB + Mongoose (robust storage for assignments, schemas, and questions)
 - **Message Broker & Queues**: BullMQ + Redis (handles heavy visual AI generation jobs asynchronously to prevent API blockages)
 - **Real-time Comms**: Socket.io (streams job status from queue workers back to the browser in real-time)
-- **Visual AI Processing**: Gemini 1.5 Flash / GPT-4o (multimodal REST processing with strict schema prompt constraints)
+- **Multi-Stage AI Processing**: Chained LLM Fallback (Groq Llama 3.3 / Gemini 2.5 Flash / OpenAI GPT-4o) with strict schema prompt constraints. By default, it runs Groq Llama 3.3 (`llama-3.3-70b-versatile`) as the primary model to ensure ultra-fast generations, with seamless fallbacks to Gemini and OpenAI.
 
 ### Frontend Stack
 - **Framework**: Next.js 14+ (App Router) + TypeScript
@@ -74,6 +74,7 @@ REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 GEMINI_API_KEY=your_gemini_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
 ---
@@ -115,7 +116,15 @@ The client will start running on port `3000`. Open [http://localhost:3000](http:
 To build an institutional-grade platform, we formulated a highly resilient, performant decoupled approach.
 
 ### 1. The Dual-Mode Execution Strategy (No-Fail BullMQ Fallback)
-Visual AI models (Gemini 1.5 Flash, GPT-4o) are highly compute-intensive and subject to cold starts and network latency. Blocking a standard Express request-response thread for 10-15 seconds is highly anti-pattern. 
+Visual AI models are highly compute-intensive and subject to cold starts, rate limits, or network latency. Blocking a standard Express request-response thread for 10-15 seconds is highly anti-pattern.
+
+### 1.5 Chained LLM Provider Fallback (Zero-Fail Guarantee)
+Because public model APIs (such as Gemini) are subject to intermittent network blocks, API rate limits, or outages, the generation engine executes a multi-stage **LLM Fallback Chain**:
+1. **Groq Llama 3.3 (Flagship Model)**: Groq is configured as our primary generation engine due to its ultra-low latency and highly capable `llama-3.3-70b-versatile` model.
+2. **Gemini 2.5 Flash Fallback**: If Groq fails or times out, the backend gracefully falls back to Gemini 2.5 Flash via REST.
+3. **OpenAI GPT-4o Fallback**: If Gemini is blocked, it falls back to OpenAI GPT-4o.
+4. **Premium Local Mock Schema**: If all APIs fail or are offline, it immediately resolves using our premium local NCERT topic templates.
+All external REST calls are bound to strict, independent timeouts (10s for Groq, 15s for Gemini/OpenAI) to guarantee that background generation workers *never* hang or block indefinitely. 
 - **Active Mode (Redis Active)**: When a Redis instance is available, tasks are dispatched asynchronously to a high-concurrency **BullMQ queue**. The queue worker consumes the job, calls the AI models, updates MongoDB, and emits real-time progress percentages (20% -> 50% -> 80% -> 100%) back to the client using **Socket.io**.
 - **Graceful Fallback Mode (Redis Offline)**: In environments where Redis is not running locally, the system bypasses BullMQ. It initiates a synchronous background execution thread (`process.nextTick`) without blocking the main event loop, ensuring **Socket.io** progress updates and worksheet generations continue to work seamlessly.
 

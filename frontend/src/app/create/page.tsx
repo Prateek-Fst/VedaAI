@@ -66,7 +66,8 @@ export default function CreateAssignmentPage() {
 
   // Connect to Socket.io room when currentAssignment is created
   useEffect(() => {
-    if (currentAssignment && currentAssignment._id && generatingStatus === 'pending') {
+    const isGenerating = generatingStatus === 'pending' || generatingStatus === 'processing';
+    if (currentAssignment && currentAssignment._id && isGenerating) {
       const assignmentId = currentAssignment._id;
       
       // Join WebSocket room
@@ -99,8 +100,9 @@ export default function CreateAssignmentPage() {
   // Polling fallback to reconcile state if socket events are missed or during race conditions
   useEffect(() => {
     let intervalId: NodeJS.Timeout | null = null;
+    const isGenerating = generatingStatus === 'pending' || generatingStatus === 'processing';
     
-    if (currentAssignment && currentAssignment._id && generatingStatus === 'pending') {
+    if (currentAssignment && currentAssignment._id && isGenerating) {
       const assignmentId = currentAssignment._id;
       
       intervalId = setInterval(async () => {
