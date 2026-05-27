@@ -73,6 +73,20 @@ export const createAssignment = async (req: Request, res: Response) => {
       imagePath: file ? file.path : undefined
     };
 
+    const isServerless = process.env.VERCEL === '1' || process.env.VERCEL === 'true' || process.env.SERVERLESS_MODE === 'true';
+
+    if (isServerless) {
+      console.log(`⚡ Serverless environment (Vercel) detected. Processing assignment: ${assignment._id} synchronously.`);
+      try {
+        await processAssignmentJob({ data: jobData } as any);
+        const updated = await Assignment.findById(assignment._id);
+        return res.status(201).json(updated || assignment);
+      } catch (err: any) {
+        console.error('❌ Synchronous generation failed in serverless mode:', err);
+        return res.status(500).json({ error: err.message || 'AI generation failed in serverless mode' });
+      }
+    }
+
     if (isRedisAvailable() && assignmentQueue) {
       await assignmentQueue.add(`generate-${assignment._id}`, jobData, {
         attempts: 2,
@@ -253,6 +267,20 @@ export const regenerateAssignment = async (req: Request, res: Response) => {
       questionConfigs: parsedConfigs,
       imagePath: assignment.imageUrl ? `./public${assignment.imageUrl}` : undefined
     };
+
+    const isServerless = process.env.VERCEL === '1' || process.env.VERCEL === 'true' || process.env.SERVERLESS_MODE === 'true';
+
+    if (isServerless) {
+      console.log(`⚡ Serverless environment (Vercel) detected. Regenerating assignment: ${assignment._id} synchronously.`);
+      try {
+        await processAssignmentJob({ data: jobData } as any);
+        const updated = await Assignment.findById(id);
+        return res.status(200).json(updated || assignment);
+      } catch (err: any) {
+        console.error('❌ Synchronous regeneration failed in serverless mode:', err);
+        return res.status(500).json({ error: err.message || 'AI regeneration failed in serverless mode' });
+      }
+    }
 
     if (isRedisAvailable() && assignmentQueue) {
       await assignmentQueue.add(`generate-${assignment._id}`, jobData, {
