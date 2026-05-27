@@ -51,7 +51,8 @@ interface AssignmentStore {
   resetGenerating: () => void;
 }
 
-const API_BASE_URL = 'http://localhost:5001/api/assignments';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
+const API_BASE_URL = `${API_URL}/api/assignments`;
 
 export const useAssignmentStore = create<AssignmentStore>((set, get) => ({
   assignments: [],
