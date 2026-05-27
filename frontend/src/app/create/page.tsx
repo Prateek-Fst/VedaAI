@@ -107,7 +107,8 @@ export default function CreateAssignmentPage() {
       
       intervalId = setInterval(async () => {
         try {
-          const res = await fetch(`http://localhost:5001/api/assignments/${assignmentId}`);
+          const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
+          const res = await fetch(`${apiBase}/api/assignments/${assignmentId}`);
           if (res.ok) {
             const data = await res.json();
             console.log('📡 Polling Reconciler checked status:', data.status);
